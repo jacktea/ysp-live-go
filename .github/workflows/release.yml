@@ -2,9 +2,10 @@ name: Release
 
 # 打 tag 即发布：构建跨平台二进制 + 推 GHCR 多架构镜像 + 生成 GitHub Release。
 #
-#   git tag v1.0.0 && git push origin v1.0.0
+#   git tag 1.0.0 && git push origin 1.0.0        # 不带 v
+#   git tag v1.0.0 && git push origin v1.0.0      # 带 v
 #
-# 产物：
+# 两种打标习惯都支持。产物：
 #   - GitHub Release 附件：ysp-live-<version>-<os>-<arch>[v6|v7][.exe] + checksums.txt
 #   - 容器镜像：ghcr.io/<owner>/ysp-live-go:<version> / :<major>.<minor> / :latest / :sha-<sha>
 #
@@ -13,7 +14,10 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      # 注意：GitHub 的 tag 过滤是"整串匹配"，v*.*.* 不会匹配 1.0.0，
+      # 所以两种写法必须分别列出。尾部 * 用来兼容 -rc1 / -beta.1 这类预发布后缀。
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+      - '[0-9]+.[0-9]+.[0-9]+*'
 
 # 同一 tag 重复触发时不并行，避免两个 run 同时推 latest 打架
 concurrency:
