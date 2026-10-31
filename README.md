@@ -1,5 +1,9 @@
 # ysp-live-go
 
+[![CI](https://github.com/jacktea/ysp-live-go/actions/workflows/ci.yml/badge.svg)](https://github.com/jacktea/ysp-live-go/actions/workflows/ci.yml)
+[![Release](https://github.com/jacktea/ysp-live-go/actions/workflows/release.yml/badge.svg)](https://github.com/jacktea/ysp-live-go/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 央视频全频道直播代理（64 路，含 4K / 8K、高码率央视、省级卫视与 7 天回看）的 **Go 重写版**。
 
 原项目 [ysp-live](https://github.com/evanzme/ysp-live) 由 Python 网关（`ysp-live.py`，3374 行）+ Node.js 网页版兜底引擎
@@ -31,12 +35,41 @@
 
 ## 快速开始
 
-### 本机运行
+### 预编译二进制（推荐）
+
+从 [Releases](https://github.com/jacktea/ysp-live-go/releases) 下载对应平台的文件：
+
+| 平台 | 文件后缀 |
+|---|---|
+| Linux x86_64 | `linux-amd64` |
+| Linux ARM64 | `linux-arm64` |
+| Linux ARMv7 / ARMv6（树莓派、软路由） | `linux-armv7` / `linux-armv6` |
+| macOS Intel / Apple Silicon | `darwin-amd64` / `darwin-arm64` |
+| Windows x86_64 | `windows-amd64.exe` |
+
+```bash
+chmod +x ysp-live-<版本>-linux-amd64
+./ysp-live-<版本>-linux-amd64     # 监听 0.0.0.0:8767
+```
+
+下载后可用同批次的 `checksums.txt` 校验：
+
+```bash
+shasum -a 256 -c checksums.txt
+```
+
+### 从源码构建
 
 ```bash
 go build -o ysp-live ./cmd/ysp-live
 ./ysp-live              # 监听 0.0.0.0:8767
 ./ysp-live 9000         # 指定端口
+```
+
+自己编译时想把版本号写进二进制（发布会自动做这一步）：
+
+```bash
+go build -ldflags "-X github.com/jacktea/ysp-live-go/internal/httpapi.Version=1.0.0" -o ysp-live ./cmd/ysp-live
 ```
 
 播放器（APTV / TiviMate / OTT Navigator）添加订阅：
@@ -47,8 +80,21 @@ http://<局域网IP>:8767/all.m3u
 
 ### Docker
 
+镜像发布在 GHCR，多架构（amd64 / arm64 / armv7）自动匹配：
+
 ```bash
+# 本地构建（compose 内已配好数据卷、TZ、并发数）
 docker compose up -d --build
+
+# 只想拉发布镜像：删掉 compose 里的 build: 一行后
+docker compose pull && docker compose up -d
+
+# 或者不用 compose 直接跑（把 1.2.3 换成实际版本号；镜像 tag 不带 v 前缀）
+docker run -d --name ysp-live --network host --restart unless-stopped \
+  -v "$PWD/data:/app/data" \
+  -e TZ=Asia/Shanghai \
+  ghcr.io/jacktea/ysp-live-go:1.2.3
+
 docker logs -f ysp-live
 ```
 
@@ -137,6 +183,31 @@ go test -run TestName -v ./internal/resolver/   # 单个测试
 ```
 
 `docs/PORTING.md` 记录了移植约定与各模块与原实现的对应关系，`docs/BUGS.md` 记录修复的 bug。
+
+## 发布
+
+打 tag 即触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+流水线先跑 gofmt + `go vet` + `go test -race` 作为门禁，通过后产出：
+
+- **GitHub Release**：7 个二进制（linux/amd64、linux/arm64、linux/armv6、linux/armv7、
+  windows/amd64、darwin/amd64、darwin/arm64）+ `checksums.txt`。
+  版本号通过 `-ldflags -X` 注入二进制，`/health` 的 `version` 字段与启动横幅可见。
+- **容器镜像**：`ghcr.io/<owner>/ysp-live-go`，多架构 `linux/amd64` / `linux/arm64` / `linux/arm/v7`，
+  标签为 `1.2.3`（tag 去掉 `v`）、`1.2`、`sha-<sha>`，正式版额外打 `latest`
+  （带 `-` 的 tag 如 `v1.0.0-rc1` 视为预发布，不打 `latest`）。
+
+日常 push / PR 走 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)：ubuntu + macOS 双平台构建测试、
+`-race` 检测、go.mod 一致性、gofmt，以及 Dockerfile 构建 + `/health` 冒烟测试。
+
+## 许可
+
+[MIT](LICENSE)。可自由使用、修改、分发（含商业用途），只需保留版权声明与许可声明。
 
 ## 免责声明
 

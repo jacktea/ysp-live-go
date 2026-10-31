@@ -1,0 +1,265 @@
+name: Release
+
+# 打 tag 即发布：构建跨平台二进制 + 推 GHCR 多架构镜像 + 生成 GitHub Release。
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+#
+# 产物：
+#   - GitHub Release 附件：ysp-live-<version>-<os>-<arch>[v6|v7][.exe] + checksums.txt
+#   - 容器镜像：ghcr.io/<owner>/ysp-live-go:<version> / :<major>.<minor> / :latest / :sha-<sha>
+#
+# 发布前先跑 gofmt + vet + test 作为门禁，测试不过不产出任何发布物。
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# 同一 tag 重复触发时不并行，避免两个 run 同时推 latest 打架
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # 创建 GitHub Release
+  packages: write   # 推 GHCR
+
+jobs:
+  # ---------- 门禁：测试不过不发布 ----------
+  verify:
+    name: 测试门禁
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Go
+        uses: actions/setup-go@v7
+        with:
+          # go.mod 声明 go 1.26.10，按 go.mod 自动选版本
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt 检查
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -short 跳过需要真实网络的上游 E2E（该测试仅在 YSP_E2E=1 时执行）
+        run: go test -short -race ./...
+
+  # ---------- 跨平台二进制 ----------
+  build-binaries:
+    name: 构建二进制 (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: arm
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 编译
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          # 版本号去掉 tag 的 v 前缀，写进二进制的 /health 与启动横幅
+          version="${GITHUB_REF_NAME#v}"
+          ext=""
+          [ "${GOOS}" = "windows" ] && ext=".exe"
+          suffix="${GOOS}-${GOARCH}"
+          mkdir -p dist
+
+          build() { # $1=GOARM（空表示不设置） $2=输出文件名
+            echo "构建 $2"
+            if [ -n "$1" ]; then export GOARM="$1"; fi
+            CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+              -ldflags="-s -w -X github.com/jacktea/ysp-live-go/internal/httpapi.Version=${version}" \
+              -o "$2" ./cmd/ysp-live
+          }
+
+          if [ "${GOOS}/${GOARCH}" = "linux/arm" ]; then
+            # 软路由常见 armv6 / armv7 两个 ABI 变体，都产出
+            build 6 "dist/ysp-live-${version}-${suffix}v6${ext}"
+            build 7 "dist/ysp-live-${version}-${suffix}v7${ext}"
+          else
+            build "" "dist/ysp-live-${version}-${suffix}${ext}"
+          fi
+
+          ls -lh dist
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------- GHCR 多架构镜像 ----------
+  build-image:
+    name: 构建并推送镜像
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 计算版本与镜像地址
+        id: vars
+        run: |
+          set -euo pipefail
+          # 镜像名必须小写（GHCR 要求），github.repository 保留原始大小写
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: 安装 QEMU（arm64 / armv7 运行阶段模拟）
+        uses: docker/setup-qemu-action@v4
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像标签
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.vars.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=sha,format=short,prefix=sha-
+          labels: |
+            org.opencontainers.image.licenses=MIT
+
+      - name: 构建并推送（多架构）
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          # arm/v7 覆盖树莓派 / armv7 软路由；不构建 386 与 arm/v6 镜像
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------- 汇总产物 + 生成 Release ----------
+  release:
+    name: 生成 GitHub Release
+    needs: [build-binaries, build-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 计算版本与镜像地址
+        id: vars
+        run: |
+          set -euo pipefail
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: 下载全部二进制产物
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: 生成校验和
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # 注意：只对二进制求和。用 ./* 会把重定向刚创建的空 checksums.txt 也算进去，
+          # 导致产物里出现一条自指的空文件记录。
+          shasum -a 256 ./ysp-live-* | sed 's#\./##' > checksums.txt
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+          # 就地自校验，避免格式问题到用户手里才发现
+          shasum -a 256 -c checksums.txt
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/ysp-live-*
+            dist/checksums.txt
+          body: |
+            ## 安装
+
+            **二进制**：下载对应平台的文件，Linux / macOS 需先 `chmod +x`；Windows 用 `.exe`。
+
+            | 平台 | 文件 |
+            |---|---|
+            | Linux x86_64 | `ysp-live-${{ steps.vars.outputs.version }}-linux-amd64` |
+            | Linux ARM64 | `ysp-live-${{ steps.vars.outputs.version }}-linux-arm64` |
+            | Linux ARMv7 / ARMv6 | `ysp-live-${{ steps.vars.outputs.version }}-linux-armv7` / `-linux-armv6` |
+            | macOS Intel / Apple Silicon | `-darwin-amd64` / `-darwin-arm64` |
+            | Windows x86_64 | `-windows-amd64.exe` |
+
+            **Docker**（多架构：amd64 / arm64 / armv7）：
+
+            ```bash
+            docker pull ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}
+            docker run -d --name ysp-live --network host --restart unless-stopped \
+              -v "$PWD/data:/app/data" \
+              -e TZ=Asia/Shanghai \
+              ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}
+            ```
+
+            运行后订阅地址：`http://<局域网IP>:8767/all.m3u`
+
+            ## 校验
+
+            ```bash
+            shasum -a 256 -c checksums.txt
+            ```
+
+            ## 注意
+
+            必须运行在**家庭宽带**下：设备注册会被机房 IP 拒绝，请勿部署到 VPS / 云服务器。
+            本项目仅用于学习研究，遵循 [MIT 协议](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/LICENSE)。

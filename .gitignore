@@ -1,6 +1,94 @@
+# ============================================================
+# ysp-live-go 的 .gitignore
+#
+# 说明：
+#   1) 「运行期状态 / 日志」不应入库：默认 DataDir 就是可执行文件所在
+#      目录（本机运行 ./ysp-live 即仓库根），所以状态文件会直接落在根目录，
+#      因此按文件名忽略，而不是只忽略 /data/。
+#   2) internal/engine/web/wasm/*.wasm 与 internal/engine/web/channels_gen.go
+#      是 //go:embed / 编译必需文件，虽然由 gen/gen_assets.py 产生，
+#      但必须入库，**不要**加进忽略列表（见文件末尾的说明）。
+# ============================================================
+
+# ---------- 编译产物 ----------
+# README: go build -o ysp-live ./cmd/ysp-live
 /ysp-live
-/data/
+/ysp-live-go
+/ysp-live.exe
+# 在包目录里直接 go build 时留下的同名二进制
+cmd/ysp-live/ysp-live
+# release workflow 本地复现时产出（CI 里由 upload-artifact 收集）
+/dist/
+/bin/
+/build/
+/out/
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.a
+
+# ---------- Go 测试 / 性能分析产物 ----------
 *.test
-dist/
+*.out
+*.prof
+*.cover
+*.coverprofile
+coverage.*
+profile.cov
+cpu.prof
+mem.prof
+block.prof
+mutex.prof
+
+# ---------- 运行期持久化状态 ----------
+# 设备身份与代理缓存（config.finalize 里按 DataDir 拼接）
+/data/
+device-state-rs.json
+device-state-rs.json.tmp
+proxy-cache-state-rs.json
+proxy-cache-state-rs.json.tmp.*
+*.tmp
+*.tmp.*
+
+# ---------- 日志 ----------
+# 原项目会把运行日志重定向到 ysp-live.log
+*.log
+logs/
+*.log.*
+
+# ---------- 本地环境 / 配置覆盖 ----------
+.env
+.env.*
+!.env.example
+docker-compose.override.yml
+*.local.yml
+*.local.yaml
+
+# ---------- Python（internal/engine/web/gen/gen_assets.py）----------
 __pycache__/
-*.pyc
+*.py[cod]
+.venv/
+venv/
+
+# ---------- 编辑器 / 操作系统 ----------
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.history/
+
+# ============================================================
+# 禁止忽略（务必保持入库，否则 go build 会失败）：
+#   internal/engine/web/wasm/keygen.wasm
+#   internal/engine/web/wasm/ticket.wasm
+#   internal/engine/web/wasm/ticket_a.wasm   ← //go:embed 目标
+#   internal/engine/web/channels_gen.go      ← 生成但参与编译
+#   docs/*.md、go.mod、go.sum、Dockerfile、docker-compose.yml
+# ============================================================

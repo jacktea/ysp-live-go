@@ -1,0 +1,118 @@
+name: CI
+
+# 日常门禁：每次 push 到主分支或提 PR 都跑一遍。
+# 发布（打 tag）走 release.yml，两者互不重叠。
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一个分支/PR 上重复推送时取消旧构建，省 runner 时间
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 构建与测试
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu 为发布平台；macOS 顺带验证 darwin 上的编译与测试
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 校验 go.mod / go.sum 一致
+        run: |
+          go mod verify
+          go mod tidy
+          if ! git diff --quiet -- go.mod go.sum; then
+            echo "::error::go.mod / go.sum 与代码不一致，请本地执行 go mod tidy 后提交"
+            git --no-pager diff -- go.mod go.sum
+            exit 1
+          fi
+
+      - name: gofmt 检查
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -short 跳过需要真实网络的上游 E2E（见 internal/resolver/e2e_test.go）
+        run: go test -short ./...
+
+      - name: go test（竞态检测）
+        # 项目大量使用 goroutine + 并发池，race 单独跑一遍
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -short -race ./...
+
+  # Docker 构建校验：只构建不推送，确认 Dockerfile 与 .dockerignore 没写坏
+  docker:
+    name: Dockerfile 校验
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 安装 Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 构建镜像（不推送）
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ysp-live-go:ci
+          build-args: |
+            VERSION=ci
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 冒烟测试（确认二进制能启动并响应 /health）
+        run: |
+          set -euo pipefail
+          docker run -d --name ysp-live-ci -p 18767:18767 ysp-live-go:ci 18767
+          # 最多等 30 秒
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:18767/health" -o /tmp/health.json 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          docker logs ysp-live-ci || true
+          test -s /tmp/health.json
+          grep -q '"ok": *true' /tmp/health.json
+          echo "--- /health ---"
+          cat /tmp/health.json
+
+      - name: 清理
+        if: always()
+        run: docker rm -f ysp-live-ci 2>/dev/null || true

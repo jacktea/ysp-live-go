@@ -29,8 +29,8 @@ import (
 	"github.com/jacktea/ysp-live-go/internal/server"
 )
 
-// Version 二进制版本。
-const Version = httpapi.Version
+// Version 二进制版本（可通过 -ldflags -X 注入，见 internal/httpapi.Version 的说明）。
+var Version = httpapi.Version
 
 func main() {
 	cfg, err := config.Parse(os.Args[1:])

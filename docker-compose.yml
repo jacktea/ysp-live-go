@@ -1,9 +1,10 @@
 services:
   ysp-live:
-    # 本地构建：docker compose up -d --build
-    # 或用 GHCR 镜像：image: ghcr.io/<owner>/ysp-live-go:latest
+    # 二选一：
+    #   本地构建：docker compose up -d --build
+    #   用发布镜像：注释掉 build，解注释 image（多架构 amd64/arm64/armv7 自动匹配）
     build: .
-    image: ysp-live-go:latest
+    image: ghcr.io/jacktea/ysp-live-go:latest
     container_name: ysp-live
     restart: unless-stopped
     # host 模式直接使用宿主机网络，程序监听 8767

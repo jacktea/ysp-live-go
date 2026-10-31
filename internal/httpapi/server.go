@@ -35,7 +35,13 @@ import (
 )
 
 // Version 版本号（与原项目 __version__ 对齐）。
-const Version = "9.4.0"
+//
+// 这里用 var 而不是 const，是为了让发布流水线能把 git tag 注入二进制：
+//
+//	go build -ldflags "-X github.com/jacktea/ysp-live-go/internal/httpapi.Version=1.2.3" ./cmd/ysp-live
+//
+// 不带 -X 时保持默认值 9.4.0（与原项目版本号一致）。
+var Version = "9.4.0"
 
 // AuthorCommunity / AuthorChannel 原作者发布渠道（原项目在 / 与 /diag 中展示）。
 const (
