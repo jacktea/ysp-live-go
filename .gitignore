@@ -1,0 +1,6 @@
+/ysp-live
+/data/
+*.test
+dist/
+__pycache__/
+*.pyc

@@ -1,0 +1,25 @@
+services:
+  ysp-live:
+    # 本地构建：docker compose up -d --build
+    # 或用 GHCR 镜像：image: ghcr.io/<owner>/ysp-live-go:latest
+    build: .
+    image: ysp-live-go:latest
+    container_name: ysp-live
+    restart: unless-stopped
+    # host 模式直接使用宿主机网络，程序监听 8767
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      # 同时获取高码率的频道数上限（原项目默认 6，compose 中设 4）
+      - YSP_LINKS_PER_DEVICE=4
+      # 换台防抖：非 4K 频道先出 1080p，停留超过该秒数才获取高码率（默认 10，0 为关闭）
+      # - YSP_ZAP_DEBOUNCE=10
+      # 只让 3 个真 4K/8K 频道走设备协议，其余走 1080p
+      # - YSP_ONLY_4K_DEVICE=1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
